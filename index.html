@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';">
+    <title>Joy Comparison - 静静的文本对比</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Joy Comparison - 静静的文本对比</h1>
+    <div id="status" class="status success">就绪</div>
+    <div class="mode-selector">
+        <label>
+            <input type="radio" name="mode" value="text" checked> 文本对比
+        </label>
+        <label>
+            <input type="radio" name="mode" value="table"> 表格对比
+        </label>
+    </div>
+    
+    <div class="theme-selector">
+        <label>主题：</label>
+        <select id="themeSelect">
+            <option value="classic">经典</option>
+            <option value="morandi">莫兰迪</option>
+            <option value="maillard">美拉德</option>
+            <option value="pink">粉色</option>
+            <option value="blue">蓝色</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+        </select>
+    </div>
+    
+    <div class="input-section" id="textMode">
+        <div class="input-group">
+            <label for="original">原始文本:</label>
+            <textarea id="original" placeholder="输入要对比的文本..."></textarea>
+        </div>
+        <div class="input-group">
+            <label for="modified">修改文本:</label>
+            <textarea id="modified" placeholder="输入修改后的文本..."></textarea>
+        </div>
+    </div>
+    <div class="text-options" id="textOptions">
+        <label class="text-option-item" for="ignoreListNumbers">
+            <input type="checkbox" id="ignoreListNumbers">
+            <span>忽略列表序号差异</span>
+        </label>
+        <span class="text-option-hint">支持一级与二级有序列表，按层级语义忽略序号格式差异</span>
+        <div id="listValidationPanel" class="list-validation-panel" style="display: none;"></div>
+    </div>
+    
+    <div class="input-section" id="tableMode" style="display: none;">
+        <div class="table-input-container">
+            <div class="input-group">
+                <label for="originalTable">原始表格数据:</label>
+                <textarea id="originalTable" placeholder="粘贴Excel/CSV/JSON数据"></textarea>
+            </div>
+            <div class="input-group">
+                <label for="modifiedTable">修改表格数据:</label>
+                <textarea id="modifiedTable" placeholder="粘贴修改后的数据"></textarea>
+            </div>
+        </div>
+    </div>
+    <div class="nav-buttons">
+        <button id="compareText" style="display: inline-block;">比较文本</button>
+        <button id="compareTable" style="display: none;">比较表格</button>
+        <button id="prevDiff" class="diff-nav-button" disabled>上一处差异</button>
+        <button id="nextDiff" class="diff-nav-button" disabled>下一处差异</button>
+        <span id="diffInfo" class="nav-info"></span>
+        <input type="number" id="jumpToDiff" min="1" placeholder="跳转到差异" class="algorithm-select" style="width: 80px; margin-left: 10px;">
+        <button id="jumpButton" class="diff-nav-button" disabled>跳转</button>
+        <select id="diffList" class="algorithm-select" style="width: 200px; margin-left: 10px;">
+            <option value="">选择差异位置...</option>
+        </select>
+        <button id="saveHistory" style="margin-left: 10px;">保存记录</button>
+        <button id="showHistory" style="margin-left: 10px;">历史记录</button>
+        <select id="algorithm" class="algorithm-select" style="display: none;">
+            <option value="myers">Myers Diff</option>
+        </select>
+    </div>
+    <div class="result-section" id="textResults">
+        <div class="result-group">
+            <div class="result-title">原始文本差异:</div>
+            <div id="originalResult" class="result-content"></div>
+        </div>
+        <div class="result-group">
+            <div class="result-title">修改文本差异:</div>
+            <div id="modifiedResult" class="result-content"></div>
+        </div>
+    </div>
+    
+    <div class="result-section" id="tableResults" style="display: none;">
+        <div class="result-group">
+            <div class="result-title">原始表格:</div>
+            <div id="originalTableResult" class="result-content"></div>
+        </div>
+        <div class="result-group">
+            <div class="result-title">修改表格:</div>
+            <div id="modifiedTableResult" class="result-content"></div>
+        </div>
+    </div>
+
+    <!-- 历史记录面板 -->
+    <div id="historyPanel" class="history-panel" style="display: none;">
+        <div class="history-header">
+            <h3>历史对比记录</h3>
+            <div class="history-header-buttons">
+                <button id="clearHistory" class="history-header-btn" style="background-color: #ff9800; color: white;">清空记录</button>
+                <button id="closeHistory" class="history-header-btn" style="background-color: #f44336; color: white;">关闭</button>
+            </div>
+        </div>
+        <div class="history-list" id="historyList"></div>
+    </div>
+
+    <script src="dmp.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

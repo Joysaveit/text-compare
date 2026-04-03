@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Joy Comparison - 静静的文本对比",
+  "version": "0.0.1",
+  "description": "静静的文本对比工具，优雅地进行字符级文本差异检测，支持智能导航和同步滚动",
+  "permissions": [
+    "storage"
+  ],
+  "action": {
+    "default_title": "Joy Comparison - 静静的文本对比",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
