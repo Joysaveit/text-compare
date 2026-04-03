@@ -108,6 +108,52 @@ function appendPrefixContent(target, prefixText, issues) {
     target.appendChild(document.createTextNode(prefix));
 }
 
+function appendIssueAwareText(target, text, issues) {
+    if (!text) return;
+
+    if (issues && issues.length > 0) {
+        const span = document.createElement('span');
+        span.className = 'numbering-issue-prefix';
+        span.textContent = text;
+        span.title = issues.map(getIssueSummary).join('\n');
+        target.appendChild(span);
+        return;
+    }
+
+    target.appendChild(document.createTextNode(text));
+}
+
+function createPrefixedDiffSpan(className, text, type, issues) {
+    const span = createDiffSpan(className, text, type);
+    if (issues && issues.length > 0) {
+        span.classList.add('numbering-issue-prefix');
+        span.title = issues.map(getIssueSummary).join('\n');
+    }
+    return span;
+}
+
+function appendPrefixDiffs(originalParent, modifiedParent, originalPrefix, modifiedPrefix, originalIssues, modifiedIssues) {
+    const dmp = new diff_match_patch();
+    let prefixDiffs = dmp.diff_main(originalPrefix || '', modifiedPrefix || '');
+    dmp.diff_cleanupSemantic(prefixDiffs);
+    prefixDiffs = NumberingAwareTextComparer.normalizeDiffEntries(prefixDiffs);
+
+    prefixDiffs.forEach(diff => {
+        const type = diff[0];
+        const text = diff[1];
+        if (!text) return;
+
+        if (type === -1) {
+            originalParent.appendChild(createPrefixedDiffSpan('diff-delete', text, 'delete', originalIssues));
+        } else if (type === 1) {
+            modifiedParent.appendChild(createPrefixedDiffSpan('diff-insert', text, 'insert', modifiedIssues));
+        } else {
+            appendIssueAwareText(originalParent, text, originalIssues);
+            appendIssueAwareText(modifiedParent, text, modifiedIssues);
+        }
+    });
+}
+
 class ListNumberingAnalyzer {
     static analyze(text, side) {
         const rawLines = normalizeLineBreaks(text).split('\n');
@@ -651,16 +697,40 @@ class NumberingAwareTextComparer {
 
         comparison.operations.forEach(operation => {
             if (operation.type === 'equal') {
-                const originalLine = appendPlainLine(originalElement, operation.original.rawLine);
-                const modifiedLine = appendPlainLine(modifiedElement, operation.modified.rawLine);
+                const originalLine = createLineElement();
+                const modifiedLine = createLineElement();
+
+                if (operation.original.isList) {
+                    appendPrefixContent(originalLine, operation.original.prefixText, operation.original.validationIssues);
+                    originalLine.appendChild(document.createTextNode(operation.original.bodyText || ''));
+                } else {
+                    originalLine.textContent = operation.original.rawLine;
+                }
+
+                if (operation.modified.isList) {
+                    appendPrefixContent(modifiedLine, operation.modified.prefixText, operation.modified.validationIssues);
+                    modifiedLine.appendChild(document.createTextNode(operation.modified.bodyText || ''));
+                } else {
+                    modifiedLine.textContent = operation.modified.rawLine;
+                }
+
                 applyIssueDecoration(originalLine, operation.original.validationIssues);
                 applyIssueDecoration(modifiedLine, operation.modified.validationIssues);
+                originalElement.appendChild(originalLine);
+                modifiedElement.appendChild(modifiedLine);
                 return;
             }
 
             if (operation.type === 'delete') {
                 const originalLine = createLineElement();
-                originalLine.appendChild(createDiffSpan('diff-delete', operation.original.rawLine, 'delete'));
+                if (operation.original.isList) {
+                    originalLine.appendChild(createPrefixedDiffSpan('diff-delete', operation.original.prefixText, 'delete', operation.original.validationIssues));
+                    if (operation.original.bodyText) {
+                        originalLine.appendChild(createDiffSpan('diff-delete', operation.original.bodyText, 'delete'));
+                    }
+                } else {
+                    originalLine.appendChild(createDiffSpan('diff-delete', operation.original.rawLine, 'delete'));
+                }
                 applyIssueDecoration(originalLine, operation.original.validationIssues);
                 originalElement.appendChild(originalLine);
                 appendPlaceholderLine(modifiedElement);
@@ -670,7 +740,14 @@ class NumberingAwareTextComparer {
             if (operation.type === 'insert') {
                 appendPlaceholderLine(originalElement);
                 const modifiedLine = createLineElement();
-                modifiedLine.appendChild(createDiffSpan('diff-insert', operation.modified.rawLine, 'insert'));
+                if (operation.modified.isList) {
+                    modifiedLine.appendChild(createPrefixedDiffSpan('diff-insert', operation.modified.prefixText, 'insert', operation.modified.validationIssues));
+                    if (operation.modified.bodyText) {
+                        modifiedLine.appendChild(createDiffSpan('diff-insert', operation.modified.bodyText, 'insert'));
+                    }
+                } else {
+                    modifiedLine.appendChild(createDiffSpan('diff-insert', operation.modified.rawLine, 'insert'));
+                }
                 applyIssueDecoration(modifiedLine, operation.modified.validationIssues);
                 modifiedElement.appendChild(modifiedLine);
                 return;
@@ -711,8 +788,21 @@ class NumberingAwareTextComparer {
 
 class StandardTextComparer {
     static compare(originalAnalysis, modifiedAnalysis) {
+        const operations = NumberingAwareTextComparer.alignLines(originalAnalysis.lines, modifiedAnalysis.lines).map(operation => {
+            if (operation.type === 'equal' && operation.original && operation.modified) {
+                if ((operation.original.rawLine || '') !== (operation.modified.rawLine || '')) {
+                    return {
+                        ...operation,
+                        type: 'replace'
+                    };
+                }
+            }
+
+            return operation;
+        });
+
         return {
-            operations: NumberingAwareTextComparer.alignLines(originalAnalysis.lines, modifiedAnalysis.lines)
+            operations
         };
     }
 
@@ -750,7 +840,7 @@ class StandardTextComparer {
             if (operation.type === 'delete') {
                 const originalLine = createLineElement();
                 if (operation.original.prefixText) {
-                    appendPrefixContent(originalLine, operation.original.prefixText, operation.original.validationIssues);
+                    originalLine.appendChild(createPrefixedDiffSpan('diff-delete', operation.original.prefixText, 'delete', operation.original.validationIssues));
                     if (operation.original.bodyText) {
                         originalLine.appendChild(createDiffSpan('diff-delete', operation.original.bodyText, 'delete'));
                     }
@@ -770,7 +860,7 @@ class StandardTextComparer {
                 appendPlaceholderLine(originalElement);
                 const modifiedLine = createLineElement();
                 if (operation.modified.prefixText) {
-                    appendPrefixContent(modifiedLine, operation.modified.prefixText, operation.modified.validationIssues);
+                    modifiedLine.appendChild(createPrefixedDiffSpan('diff-insert', operation.modified.prefixText, 'insert', operation.modified.validationIssues));
                     if (operation.modified.bodyText) {
                         modifiedLine.appendChild(createDiffSpan('diff-insert', operation.modified.bodyText, 'insert'));
                     }
@@ -789,8 +879,14 @@ class StandardTextComparer {
             const modifiedLine = createLineElement();
 
             if (operation.original.isList && operation.modified.isList) {
-                appendPrefixContent(originalLine, operation.original.prefixText, operation.original.validationIssues);
-                appendPrefixContent(modifiedLine, operation.modified.prefixText, operation.modified.validationIssues);
+                appendPrefixDiffs(
+                    originalLine,
+                    modifiedLine,
+                    operation.original.prefixText,
+                    operation.modified.prefixText,
+                    operation.original.validationIssues,
+                    operation.modified.validationIssues
+                );
 
                 if (operation.original.bodyText === operation.modified.bodyText) {
                     originalLine.appendChild(document.createTextNode(operation.original.bodyText || ''));

@@ -446,10 +446,16 @@ body.theme-dark #showHistory:hover {
 }
 
 .numbering-issue-prefix {
-    color: #1f6fd1;
+    color: #d64545;
     font-weight: bold;
-    text-decoration: underline wavy #1f6fd1;
-    text-underline-offset: 2px;
+    text-decoration: none;
+}
+
+.diff-delete.numbering-issue-prefix,
+.diff-insert.numbering-issue-prefix {
+    color: #d64545 !important;
+    font-weight: bold;
+    text-decoration: none;
 }
 
 .text-compare-line.line-placeholder {
