@@ -18,6 +18,39 @@ function normalizeComparableText(text) {
     return (text || '').trim().replace(/\s+/g, ' ');
 }
 
+function normalizeParagraphComparableText(text) {
+    let normalized = normalizeComparableText((text || '').replace(/\n+/g, ' '));
+    normalized = normalized.replace(/([\u3400-\u9FFF])\s+([\u3400-\u9FFF])/g, '$1$2');
+    return normalized;
+}
+
+function getComparableLineBody(line) {
+    if (!line) return '';
+    if (line.isList) {
+        return normalizeParagraphComparableText(line.bodyText || '');
+    }
+    return normalizeParagraphComparableText(line.rawLine || '');
+}
+
+function extractLeadingBodyDifference(fullText, suffixText) {
+    const full = fullText || '';
+    const suffix = suffixText || '';
+    if (!full || !suffix) return null;
+    if (!full.endsWith(suffix)) return null;
+
+    const extra = full.slice(0, full.length - suffix.length);
+    if (!extra) return null;
+
+    if (/^[\u3400-\u9FFFA-Za-z0-9（）()、，,：:《》〈〉“”"'‘’\s-]{1,30}$/.test(extra)) {
+        return {
+            extraPrefix: extra,
+            sharedText: suffix
+        };
+    }
+
+    return null;
+}
+
 function createDiffSpan(className, text, type) {
     const span = document.createElement('span');
     span.className = className;
@@ -226,27 +259,71 @@ class ListNumberingAnalyzer {
             };
         }
 
-        const explicitSecondLevel = rawLine.match(/^(\s*)(\d+)\.(\d+)(?:([、.)．。])|(\s+))?(.*)$/);
-        if (explicitSecondLevel) {
-            const separator = explicitSecondLevel[4] || explicitSecondLevel[5] || '';
+        const multiDotNumeric = rawLine.match(/^(\s*)(\d+(?:\.\d+)+)(?:([\u3001\.\)\uFF0E\u3002])|(\s+))?(.*)$/);
+        if (multiDotNumeric) {
+            const separator = multiDotNumeric[3] || multiDotNumeric[4] || '';
+            const dotSegments = multiDotNumeric[2].split('.').map(v => Number(v));
+
+            if (dotSegments.length === 2) {
+                return {
+                    rawLine,
+                    lineNumber,
+                    indent: multiDotNumeric[1],
+                    trimmed,
+                    isBlank: false,
+                    isList: true,
+                    candidateKind: 'explicit-secondary',
+                    numberingStyle: 'multi-dot',
+                    prefixText: `${multiDotNumeric[1]}${multiDotNumeric[2]}${separator}`,
+                    bodyText: multiDotNumeric[5] || '',
+                    primaryValue: dotSegments[0],
+                    secondaryValue: dotSegments[1],
+                    canBeImplicitChild: false
+                };
+            }
+
             return {
                 rawLine,
                 lineNumber,
-                indent: explicitSecondLevel[1],
+                indent: multiDotNumeric[1],
                 trimmed,
                 isBlank: false,
                 isList: true,
-                candidateKind: 'explicit-secondary',
-                numberingStyle: 'multi-dot',
-                prefixText: `${explicitSecondLevel[1]}${explicitSecondLevel[2]}.${explicitSecondLevel[3]}${separator}`,
-                bodyText: explicitSecondLevel[6] || '',
-                primaryValue: Number(explicitSecondLevel[2]),
-                secondaryValue: Number(explicitSecondLevel[3]),
+                candidateKind: 'chapter-multi-dot',
+                numberingStyle: 'chapter-multi-dot',
+                prefixText: `${multiDotNumeric[1]}${multiDotNumeric[2]}${separator}`,
+                bodyText: multiDotNumeric[5] || '',
+                primaryValue: dotSegments[dotSegments.length - 1],
+                chapterRoot: dotSegments.slice(0, -1).join('.'),
+                chapterSegments: dotSegments,
+                skipValidation: true,
                 canBeImplicitChild: false
             };
         }
 
-        const parenthesizedNumeric = rawLine.match(/^(\s*)([（(])(\d+)([）)])(?:([、.)．。])|(\s+))?(.*)$/);
+        const parenthesizedChinese = rawLine.match(/^(\s*)([\uFF08\(])([零〇一二两三四五六七八九十百千]+)([\uFF09\)])(?:([\u3001\.\)\uFF0E\u3002])|(\s+))?(.*)$/);
+        if (parenthesizedChinese) {
+            const value = this.parseChineseNumber(parenthesizedChinese[3]);
+            if (value !== null) {
+                const separator = parenthesizedChinese[5] || parenthesizedChinese[6] || '';
+                return {
+                    rawLine,
+                    lineNumber,
+                    indent: parenthesizedChinese[1],
+                    trimmed,
+                    isBlank: false,
+                    isList: true,
+                    candidateKind: 'parenthesized-chinese',
+                    numberingStyle: 'parenthesized-chinese',
+                    prefixText: `${parenthesizedChinese[1]}${parenthesizedChinese[2]}${parenthesizedChinese[3]}${parenthesizedChinese[4]}${separator}`,
+                    bodyText: parenthesizedChinese[7] || '',
+                    primaryValue: value,
+                    canBeImplicitChild: true
+                };
+            }
+        }
+
+        const parenthesizedNumeric = rawLine.match(/^(\s*)([\uFF08\(])(\d+)([\uFF09\)])(?:([\u3001\.\)\uFF0E\u3002])|(\s+))?(.*)$/);
         if (parenthesizedNumeric) {
             const separator = parenthesizedNumeric[5] || parenthesizedNumeric[6] || '';
             return {
@@ -265,7 +342,7 @@ class ListNumberingAnalyzer {
             };
         }
 
-        const numeric = rawLine.match(/^(\s*)(\d+)([、.)．。]|\s+)(.*)$/);
+        const numeric = rawLine.match(/^(\s*)(\d+)([\u3001\.\)\uFF0E\u3002]|\s+)(.*)$/);
         if (numeric) {
             const separator = numeric[3] || '';
             return {
@@ -280,7 +357,7 @@ class ListNumberingAnalyzer {
                 prefixText: `${numeric[1]}${numeric[2]}${separator}`,
                 bodyText: numeric[4] || '',
                 primaryValue: Number(numeric[2]),
-                canBeImplicitChild: separator.trim() && /[.)．。]/.test(separator)
+                canBeImplicitChild: separator.trim() && /[.)\uFF0E\u3002]/.test(separator)
             };
         }
 
@@ -340,8 +417,41 @@ class ListNumberingAnalyzer {
     static resolveLine(baseLine, blockIndex, currentLevel1, currentLevel1Sequence) {
         const normalizedBody = normalizeComparableText(baseLine.bodyText);
 
+        if (baseLine.candidateKind === 'chapter-multi-dot') {
+            return {
+                ...baseLine,
+                blockIndex,
+                level: 1,
+                order: baseLine.primaryValue,
+                parentOrder: null,
+                parentRef: null,
+                parentSequence: null,
+                sequenceIndex: currentLevel1Sequence + 1,
+                normalizedBody
+            };
+        }
+
         if (baseLine.candidateKind === 'explicit-secondary') {
             const hasMatchedParent = currentLevel1 && currentLevel1.order === baseLine.primaryValue;
+            if (!hasMatchedParent) {
+                return {
+                    ...baseLine,
+                    candidateKind: 'chapter-multi-dot',
+                    numberingStyle: 'chapter-multi-dot',
+                    blockIndex,
+                    level: 1,
+                    order: baseLine.secondaryValue,
+                    parentOrder: null,
+                    parentRef: null,
+                    parentSequence: null,
+                    sequenceIndex: currentLevel1Sequence + 1,
+                    chapterRoot: String(baseLine.primaryValue),
+                    chapterSegments: [baseLine.primaryValue, baseLine.secondaryValue],
+                    skipValidation: true,
+                    normalizedBody
+                };
+            }
+
             const parentRef = hasMatchedParent
                 ? currentLevel1.lineNumber
                 : `virtual:${blockIndex}:${baseLine.primaryValue}`;
@@ -438,7 +548,7 @@ class ListNumberingAnalyzer {
         const issues = [];
         const blocks = new Map();
 
-        lines.filter(line => line.isList).forEach(line => {
+        lines.filter(line => line.isList && !line.skipValidation).forEach(line => {
             const bucket = blocks.get(line.blockIndex) || [];
             bucket.push(line);
             blocks.set(line.blockIndex, bucket);
@@ -516,20 +626,144 @@ class ListNumberingAnalyzer {
     }
 }
 
-class NumberingAwareTextComparer {
-    static compare(originalAnalysis, modifiedAnalysis) {
-        const originalListLines = originalAnalysis.lines;
-        const modifiedListLines = modifiedAnalysis.lines;
-        const alignedOperations = this.alignLines(originalListLines, modifiedListLines);
+class TextAlignmentEngine {
+    static align(originalLines, modifiedLines, mode) {
+        const originalUnits = this.buildUnits(originalLines);
+        const modifiedUnits = this.buildUnits(modifiedLines);
+        const unitOperations = this.alignUnits(originalUnits, modifiedUnits, mode);
+        return this.flattenOperations(unitOperations);
+    }
+
+    static buildUnits(lines) {
+        const units = [];
+        let index = 0;
+
+        while (index < lines.length) {
+            const line = lines[index];
+            if (line.isBlank) {
+                units.push({
+                    kind: 'blank',
+                    lines: [line],
+                    line
+                });
+                index += 1;
+                continue;
+            }
+
+            if (line.isList) {
+                const grouped = [line];
+                let cursor = index + 1;
+                let last = line;
+                while (cursor < lines.length && this.isLikelyListContinuation(line, last, lines[cursor])) {
+                    grouped.push(lines[cursor]);
+                    last = lines[cursor];
+                    cursor += 1;
+                }
+
+                units.push({
+                    kind: 'list',
+                    lines: grouped,
+                    line: this.mergeListUnit(grouped)
+                });
+                index = cursor;
+                continue;
+            }
+
+            const paragraph = [line];
+            let cursor = index + 1;
+            while (cursor < lines.length && !lines[cursor].isBlank && !lines[cursor].isList) {
+                paragraph.push(lines[cursor]);
+                cursor += 1;
+            }
+
+            units.push({
+                kind: 'paragraph',
+                lines: paragraph,
+                line: this.mergeParagraphUnit(paragraph)
+            });
+            index = cursor;
+        }
+
+        return units;
+    }
+
+    static isLikelyListContinuation(baseListLine, lastLine, candidateLine) {
+        if (!candidateLine || candidateLine.isBlank || candidateLine.isList) return false;
+
+        const baseIndent = (baseListLine.indent || '').length;
+        const candidateIndent = (candidateLine.indent || '').length;
+        if (candidateIndent > baseIndent) return true;
+
+        const prev = (lastLine.rawLine || '').trim();
+        if (!prev) return false;
+        if (/[。；;!?？！]$/.test(prev)) return false;
+
+        return true;
+    }
+
+    static mergeListUnit(lines) {
+        const first = lines[0];
+        if (lines.length === 1) {
+            return first;
+        }
+
+        const continuation = lines.slice(1).map(line => (line.rawLine || '').trim()).filter(Boolean);
+        const mergedBody = normalizeParagraphComparableText([(first.bodyText || '').trim(), ...continuation].filter(Boolean).join('\n'));
 
         return {
-            operations: alignedOperations
+            ...first,
+            rawLine: `${first.prefixText || ''}${mergedBody}`,
+            bodyText: mergedBody,
+            normalizedBody: mergedBody,
+            isSynthetic: true,
+            sourceLineNumbers: lines.map(line => line.lineNumber)
         };
     }
 
-    static alignLines(originalLines, modifiedLines) {
-        const originalTokens = originalLines.map(line => this.getAlignmentToken(line));
-        const modifiedTokens = modifiedLines.map(line => this.getAlignmentToken(line));
+    static mergeParagraphUnit(lines) {
+        if (lines.length === 1) {
+            return lines[0];
+        }
+
+        const merged = normalizeParagraphComparableText(lines.map(line => line.rawLine || '').join('\n'));
+        return {
+            ...lines[0],
+            rawLine: merged,
+            trimmed: merged,
+            isList: false,
+            isBlank: false,
+            prefixText: '',
+            bodyText: '',
+            normalizedBody: merged,
+            isSynthetic: true,
+            sourceLineNumbers: lines.map(line => line.lineNumber),
+            validationIssues: []
+        };
+    }
+
+    static getToken(unit, mode) {
+        if (unit.kind === 'blank') {
+            return 'BLANK';
+        }
+
+        if (unit.kind === 'paragraph') {
+            return `PARA|${normalizeParagraphComparableText(unit.line.rawLine || '')}`;
+        }
+
+        const line = unit.line;
+        if (mode === 'ignore-numbering') {
+            if (line.numberingStyle === 'chapter-multi-dot') {
+                return `PARA|${normalizeParagraphComparableText(line.bodyText || '')}`;
+            }
+            return `LIST|${line.blockIndex}|${line.level}|${line.parentSequence || 0}|${normalizeParagraphComparableText(line.bodyText || '')}`;
+        }
+
+        return `LIST_STRICT|${normalizeComparableText(line.rawLine || '')}`;
+    }
+
+    static alignUnits(originalUnits, modifiedUnits, mode) {
+        const originalTokens = originalUnits.map(unit => this.getToken(unit, mode));
+        const modifiedTokens = modifiedUnits.map(unit => this.getToken(unit, mode));
         const dp = Array.from({ length: originalTokens.length + 1 }, () => Array(modifiedTokens.length + 1).fill(0));
 
         for (let i = originalTokens.length - 1; i >= 0; i--) {
@@ -546,47 +780,211 @@ class NumberingAwareTextComparer {
         let i = 0;
         let j = 0;
 
-        while (i < originalLines.length && j < modifiedLines.length) {
+        while (i < originalUnits.length && j < modifiedUnits.length) {
             if (originalTokens[i] === modifiedTokens[j]) {
                 rawOperations.push({
                     type: 'equal',
-                    original: originalLines[i],
-                    modified: modifiedLines[j]
+                    original: originalUnits[i],
+                    modified: modifiedUnits[j]
                 });
                 i += 1;
                 j += 1;
             } else if (dp[i + 1][j] >= dp[i][j + 1]) {
                 rawOperations.push({
                     type: 'delete',
-                    original: originalLines[i]
+                    original: originalUnits[i]
                 });
                 i += 1;
             } else {
                 rawOperations.push({
                     type: 'insert',
-                    modified: modifiedLines[j]
+                    modified: modifiedUnits[j]
                 });
                 j += 1;
             }
         }
 
-        while (i < originalLines.length) {
+        while (i < originalUnits.length) {
             rawOperations.push({
                 type: 'delete',
-                original: originalLines[i]
+                original: originalUnits[i]
             });
             i += 1;
         }
 
-        while (j < modifiedLines.length) {
+        while (j < modifiedUnits.length) {
             rawOperations.push({
                 type: 'insert',
-                modified: modifiedLines[j]
+                modified: modifiedUnits[j]
             });
             j += 1;
         }
 
-        return this.mergeReplaceOperations(rawOperations);
+        return this.mergeReplaceOperations(rawOperations, mode);
+    }
+
+    static mergeReplaceOperations(rawOperations, mode) {
+        const merged = [];
+        let index = 0;
+
+        while (index < rawOperations.length) {
+            const current = rawOperations[index];
+            if (current.type === 'equal') {
+                merged.push(current);
+                index += 1;
+                continue;
+            }
+
+            const deletes = [];
+            const inserts = [];
+
+            while (index < rawOperations.length && rawOperations[index].type !== 'equal') {
+                if (rawOperations[index].type === 'delete') {
+                    deletes.push(rawOperations[index].original);
+                } else if (rawOperations[index].type === 'insert') {
+                    inserts.push(rawOperations[index].modified);
+                }
+                index += 1;
+            }
+
+            merged.push(...this.pairReplaceOperations(deletes, inserts, mode));
+        }
+
+        return merged;
+    }
+
+    static pairReplaceOperations(deletes, inserts, mode) {
+        const operations = [];
+        let deleteIndex = 0;
+        let insertIndex = 0;
+
+        while (deleteIndex < deletes.length || insertIndex < inserts.length) {
+            const deleteUnit = deletes[deleteIndex];
+            const insertUnit = inserts[insertIndex];
+
+            if (deleteUnit && insertUnit && this.canPairAsReplace(deleteUnit, insertUnit, mode)) {
+                operations.push({
+                    type: 'replace',
+                    original: deleteUnit,
+                    modified: insertUnit
+                });
+                deleteIndex += 1;
+                insertIndex += 1;
+                continue;
+            }
+
+            if (deleteUnit && (!insertUnit || deletes.length - deleteIndex >= inserts.length - insertIndex)) {
+                operations.push({
+                    type: 'delete',
+                    original: deleteUnit
+                });
+                deleteIndex += 1;
+                continue;
+            }
+
+            if (insertUnit) {
+                operations.push({
+                    type: 'insert',
+                    modified: insertUnit
+                });
+                insertIndex += 1;
+            }
+        }
+
+        return operations;
+    }
+
+    static canPairAsReplace(originalUnit, modifiedUnit, mode) {
+        if (!originalUnit || !modifiedUnit) return false;
+        if (originalUnit.kind === 'blank' || modifiedUnit.kind === 'blank') return false;
+
+        if (originalUnit.kind === modifiedUnit.kind) {
+            if (originalUnit.kind === 'paragraph') return true;
+
+            if (originalUnit.kind === 'list') {
+                if (mode === 'ignore-numbering') {
+                    const originalLine = originalUnit.line;
+                    const modifiedLine = modifiedUnit.line;
+                    return originalLine.level === modifiedLine.level &&
+                        (originalLine.level === 1 || originalLine.parentSequence === modifiedLine.parentSequence);
+                }
+                return true;
+            }
+        }
+
+        if (mode === 'ignore-numbering') {
+            const originalLine = originalUnit.line;
+            const modifiedLine = modifiedUnit.line;
+            if (originalUnit.kind === 'list' && modifiedUnit.kind === 'paragraph' && originalLine.numberingStyle === 'chapter-multi-dot') {
+                return true;
+            }
+            if (modifiedUnit.kind === 'list' && originalUnit.kind === 'paragraph' && modifiedLine.numberingStyle === 'chapter-multi-dot') {
+                return true;
+            }
+        }
+
+        if (mode === 'strict') {
+            const originalBody = getComparableLineBody(originalUnit.line);
+            const modifiedBody = getComparableLineBody(modifiedUnit.line);
+            if (originalBody && modifiedBody && originalBody === modifiedBody) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static flattenOperations(unitOperations) {
+        const flattened = [];
+        unitOperations.forEach(operation => {
+            if (operation.type === 'equal') {
+                flattened.push({
+                    type: 'equal',
+                    original: operation.original.line,
+                    modified: operation.modified.line
+                });
+                return;
+            }
+
+            if (operation.type === 'delete') {
+                flattened.push({
+                    type: 'delete',
+                    original: operation.original.line
+                });
+                return;
+            }
+
+            if (operation.type === 'insert') {
+                flattened.push({
+                    type: 'insert',
+                    modified: operation.modified.line
+                });
+                return;
+            }
+
+            flattened.push({
+                type: 'replace',
+                original: operation.original.line,
+                modified: operation.modified.line
+            });
+        });
+
+        return flattened;
+    }
+}
+
+class NumberingAwareTextComparer {
+    static compare(originalAnalysis, modifiedAnalysis) {
+        return {
+            operations: this.alignLines(originalAnalysis.lines, modifiedAnalysis.lines, {
+                mode: 'ignore-numbering'
+            })
+        };
+    }
+
+    static alignLines(originalLines, modifiedLines, options = {}) {
+        const mode = options.mode || 'ignore-numbering';
+        return TextAlignmentEngine.align(originalLines, modifiedLines, mode);
     }
 
     static getAlignmentToken(line) {
@@ -788,21 +1186,10 @@ class NumberingAwareTextComparer {
 
 class StandardTextComparer {
     static compare(originalAnalysis, modifiedAnalysis) {
-        const operations = NumberingAwareTextComparer.alignLines(originalAnalysis.lines, modifiedAnalysis.lines).map(operation => {
-            if (operation.type === 'equal' && operation.original && operation.modified) {
-                if ((operation.original.rawLine || '') !== (operation.modified.rawLine || '')) {
-                    return {
-                        ...operation,
-                        type: 'replace'
-                    };
-                }
-            }
-
-            return operation;
-        });
-
         return {
-            operations
+            operations: NumberingAwareTextComparer.alignLines(originalAnalysis.lines, modifiedAnalysis.lines, {
+                mode: 'strict'
+            })
         };
     }
 
@@ -894,6 +1281,41 @@ class StandardTextComparer {
                 } else {
                     const dmp = new diff_match_patch();
                     let diffs = dmp.diff_main(operation.original.bodyText || '', operation.modified.bodyText || '');
+                    dmp.diff_cleanupSemantic(diffs);
+                    diffs = NumberingAwareTextComparer.normalizeDiffEntries(diffs);
+                    appendInlineDiffs(diffs, originalLine, modifiedLine);
+                }
+            } else if (operation.original.isList || operation.modified.isList) {
+                const originalPrefix = operation.original.isList ? (operation.original.prefixText || '') : '';
+                const modifiedPrefix = operation.modified.isList ? (operation.modified.prefixText || '') : '';
+                const originalBody = operation.original.isList ? (operation.original.bodyText || '') : (operation.original.rawLine || '');
+                const modifiedBody = operation.modified.isList ? (operation.modified.bodyText || '') : (operation.modified.rawLine || '');
+                const originalExtraBody = extractLeadingBodyDifference(originalBody, modifiedBody);
+                const modifiedExtraBody = extractLeadingBodyDifference(modifiedBody, originalBody);
+
+                appendPrefixDiffs(
+                    originalLine,
+                    modifiedLine,
+                    originalPrefix,
+                    modifiedPrefix,
+                    operation.original.validationIssues,
+                    operation.modified.validationIssues
+                );
+
+                if (getComparableLineBody(operation.original) === getComparableLineBody(operation.modified)) {
+                    originalLine.appendChild(document.createTextNode(originalBody));
+                    modifiedLine.appendChild(document.createTextNode(modifiedBody));
+                } else if (originalExtraBody) {
+                    originalLine.appendChild(createDiffSpan('diff-delete', originalExtraBody.extraPrefix, 'delete'));
+                    originalLine.appendChild(document.createTextNode(originalExtraBody.sharedText));
+                    modifiedLine.appendChild(document.createTextNode(modifiedBody));
+                } else if (modifiedExtraBody) {
+                    originalLine.appendChild(document.createTextNode(originalBody));
+                    modifiedLine.appendChild(createDiffSpan('diff-insert', modifiedExtraBody.extraPrefix, 'insert'));
+                    modifiedLine.appendChild(document.createTextNode(modifiedExtraBody.sharedText));
+                } else {
+                    const dmp = new diff_match_patch();
+                    let diffs = dmp.diff_main(originalBody, modifiedBody);
                     dmp.diff_cleanupSemantic(diffs);
                     diffs = NumberingAwareTextComparer.normalizeDiffEntries(diffs);
                     appendInlineDiffs(diffs, originalLine, modifiedLine);
@@ -1753,18 +2175,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     const comparison = StandardTextComparer.compare(originalAnalysis, modifiedAnalysis);
                     comparison.operations.forEach(operation => {
                         if (operation.original) {
-                            const originalMeta = originalAnalysis.lines[operation.original.lineNumber - 1];
-                            if (originalMeta) {
-                                Object.assign(operation.original, originalMeta);
+                            if (!operation.original.validationIssues) {
+                                operation.original.validationIssues = originalIssueMap.get(operation.original.lineNumber) || [];
                             }
-                            operation.original.validationIssues = originalIssueMap.get(operation.original.lineNumber) || [];
                         }
                         if (operation.modified) {
-                            const modifiedMeta = modifiedAnalysis.lines[operation.modified.lineNumber - 1];
-                            if (modifiedMeta) {
-                                Object.assign(operation.modified, modifiedMeta);
+                            if (!operation.modified.validationIssues) {
+                                operation.modified.validationIssues = modifiedIssueMap.get(operation.modified.lineNumber) || [];
                             }
-                            operation.modified.validationIssues = modifiedIssueMap.get(operation.modified.lineNumber) || [];
                         }
                     });
                     StandardTextComparer.renderComparison(comparison, originalResult, modifiedResult);
