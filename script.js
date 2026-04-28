@@ -1540,12 +1540,44 @@ class TableParser {
         }
     }
     
+    static parseCSVLine(line) {
+        const fields = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuotes) {
+                if (ch === '"') {
+                    if (i + 1 < line.length && line[i + 1] === '"') {
+                        current += '"';
+                        i++;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    current += ch;
+                }
+            } else {
+                if (ch === '"') {
+                    inQuotes = true;
+                } else if (ch === ',') {
+                    fields.push(current.trim());
+                    current = '';
+                } else {
+                    current += ch;
+                }
+            }
+        }
+        fields.push(current.trim());
+        return fields;
+    }
+
     static detectFormat(input) {
         if (!input || !input.trim()) return 'unknown';
-        
+
         input = input.trim();
-        
-        if ((input.startsWith('[') && input.endsWith(']')) || 
+
+        if ((input.startsWith('[') && input.endsWith(']')) ||
             (input.startsWith('{') && input.endsWith('}'))) {
             try {
                 JSON.parse(input);
@@ -1554,13 +1586,13 @@ class TableParser {
                 return 'unknown';
             }
         }
-        
+
         const lines = input.split('\n').filter(line => line.trim());
         if (lines.length > 0) {
             if (lines[0].includes('\t')) return 'tsv';
             if (lines[0].includes(',')) return 'csv';
         }
-        
+
         return 'csv';
     }
 }
@@ -1580,91 +1612,57 @@ class TableDiff {
                 unchanged: 0
             }
         };
-        
-        // 创建行的键值映射用于匹配
-        const originalMap = new Map();
-        const modifiedMap = new Map();
-        
-        originalData.forEach((row, index) => {
-            const key = JSON.stringify(Object.values(row));
-            originalMap.set(key, { row, index });
-        });
-        
-        modifiedData.forEach((row, index) => {
-            const key = JSON.stringify(Object.values(row));
-            modifiedMap.set(key, { row, index });
-        });
-        
-        // 检测新增和删除的行
-        originalData.forEach((row, index) => {
-            const key = JSON.stringify(Object.values(row));
-            if (!modifiedMap.has(key)) {
-                diff.removedRows.push({ row, index, key });
-            }
-        });
-        
-        modifiedData.forEach((row, index) => {
-            const key = JSON.stringify(Object.values(row));
-            if (!originalMap.has(key)) {
-                diff.addedRows.push({ row, index, key });
-            }
-        });
-        
-        // 检测修改的行（相同的键但内容不同）
-        const originalKeys = Array.from(originalMap.keys());
-        const modifiedKeys = Array.from(modifiedMap.keys());
-        
-        originalKeys.forEach(key => {
-            if (modifiedKeys.includes(key)) {
-                const originalRow = originalMap.get(key);
-                const modifiedRow = modifiedMap.get(key);
-                
-                // 检查是否有实际修改
-                const originalValues = Object.values(originalRow.row);
-                const modifiedValues = Object.values(modifiedRow.row);
-                
-                if (JSON.stringify(originalValues) !== JSON.stringify(modifiedValues)) {
-                    // 逐字段对比
-                    const cellDiffs = [];
-                    const keys = [...new Set([...Object.keys(originalRow.row), ...Object.keys(modifiedRow.row)])];
-                    
-                    keys.forEach(field => {
-                        const originalValue = originalRow.row[field] || '';
-                        const modifiedValue = modifiedRow.row[field] || '';
-                        
-                        if (originalValue !== modifiedValue) {
-                            cellDiffs.push({
-                                field,
-                                original: originalValue,
-                                modified: modifiedValue,
-                                type: 'modified'
-                            });
-                        }
-                    });
-                    
-                    if (cellDiffs.length > 0) {
-                        diff.modifiedRows.push({
-                            originalRow: originalRow.row,
-                            modifiedRow: modifiedRow.row,
-                            originalIndex: originalRow.index,
-                            modifiedIndex: modifiedRow.index,
-                            cellDiffs
-                        });
-                    } else {
-                        diff.unchangedRows.push({ row: originalRow.row, index: originalRow.index });
+
+        const minLen = Math.min(originalData.length, modifiedData.length);
+
+        // 按行索引对齐比较，避免用完整内容做 key 导致重复行覆盖和修改行无法识别
+        for (let i = 0; i < minLen; i++) {
+            const origRow = originalData[i];
+            const modRow = modifiedData[i];
+            const origKey = JSON.stringify(Object.values(origRow));
+            const modKey = JSON.stringify(Object.values(modRow));
+
+            if (origKey === modKey) {
+                diff.unchangedRows.push({ row: origRow, index: i });
+            } else {
+                const allFields = [...new Set([...Object.keys(origRow), ...Object.keys(modRow)])];
+                const cellDiffs = [];
+                allFields.forEach(field => {
+                    const origVal = origRow[field] || '';
+                    const modVal = modRow[field] || '';
+                    if (origVal !== modVal) {
+                        cellDiffs.push({ field, original: origVal, modified: modVal, type: 'modified' });
                     }
+                });
+                if (cellDiffs.length > 0) {
+                    diff.modifiedRows.push({
+                        originalRow: origRow,
+                        modifiedRow: modRow,
+                        originalIndex: i,
+                        modifiedIndex: i,
+                        cellDiffs
+                    });
                 } else {
-                    diff.unchangedRows.push({ row: originalRow.row, index: originalRow.index });
+                    diff.unchangedRows.push({ row: origRow, index: i });
                 }
             }
-        });
-        
-        // 更新统计信息
+        }
+
+        // 原始表格多出的行 → 已删除
+        for (let i = minLen; i < originalData.length; i++) {
+            diff.removedRows.push({ row: originalData[i], index: i });
+        }
+
+        // 修改表格多出的行 → 新增
+        for (let i = minLen; i < modifiedData.length; i++) {
+            diff.addedRows.push({ row: modifiedData[i], index: i });
+        }
+
         diff.summary.added = diff.addedRows.length;
         diff.summary.removed = diff.removedRows.length;
         diff.summary.modified = diff.modifiedRows.length;
         diff.summary.unchanged = diff.unchangedRows.length;
-        
+
         return diff;
     }
 }
@@ -2530,8 +2528,8 @@ document.addEventListener('DOMContentLoaded', function() {
                         console.log('找到记录:', record);
                         document.getElementById('original').value = record.original;
                         document.getElementById('modified').value = record.modified;
-                        document.getElementById('compare').click();
                         this.closeHistory();
+                        triggerCompare();
                     } else {
                         console.error('未找到记录:', id);
                         alert('未找到指定的历史记录');
@@ -2550,10 +2548,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         console.log('找到记录:', record);
                         document.getElementById('original').value = record.original;
                         this.closeHistory();
-                        // 如果修改文本已存在，自动触发对比
                         const modified = document.getElementById('modified').value;
                         if (modified) {
-                            document.getElementById('compare').click();
+                            triggerCompare();
                         }
                     } else {
                         console.error('未找到记录:', id);
@@ -2573,10 +2570,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         console.log('找到记录:', record);
                         document.getElementById('modified').value = record.modified;
                         this.closeHistory();
-                        // 如果原始文本已存在，自动触发对比
                         const original = document.getElementById('original').value;
                         if (original) {
-                            document.getElementById('compare').click();
+                            triggerCompare();
                         }
                     } else {
                         console.error('未找到记录:', id);
@@ -2609,6 +2605,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 const showHistoryBtn = document.getElementById('showHistory');
                 const count = this.history.length;
                 showHistoryBtn.textContent = count > 0 ? `历史记录 (${count})` : '历史记录';
+            }
+        }
+
+        // 根据当前激活模式点击对应的对比按钮，避免引用不存在的 #compare 元素
+        function triggerCompare() {
+            const mode = document.querySelector('input[name="mode"]:checked')?.value;
+            if (mode === 'table') {
+                const btn = document.getElementById('compareTable');
+                if (btn) btn.click();
+            } else {
+                const btn = document.getElementById('compareText');
+                if (btn) btn.click();
             }
         }
 
